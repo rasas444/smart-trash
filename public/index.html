@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Poubelle intelligente</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,700;12..96,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --fond: #e6e8e3;
+    --encre: #1f2a24;
+    --doux: #5d6a62;
+    --carte: #f6f7f4;
+    --c-papier_carton: #2f6fb5;
+    --c-plastique: #e8b820;
+    --c-verre: #2e8b57;
+    --c-metal: #8a949c;
+    --c-organique: #7a5230;
+    --c-electronique: #c0392b;
+    --c-autre: #3a3f3c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--fond); color: var(--encre);
+    font-family: "Bricolage Grotesque", system-ui, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px;
+  }
+  main { width: 100%; max-width: 520px; }
+  h1 { font-size: clamp(1.8rem, 6vw, 2.4rem); font-weight: 800; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sous { color: var(--doux); margin: 0 0 20px; }
+  .ecran {
+    position: relative; aspect-ratio: 4/3; background: #000; border-radius: 18px; overflow: hidden;
+  }
+  video, .ecran img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ecran img { position: absolute; inset: 0; }
+  .vide { position: absolute; inset: 0; display: grid; place-items: center; color: #cfd6d1; text-align: center; padding: 20px; }
+  .actions { display: flex; gap: 10px; margin: 14px 0 22px; flex-wrap: wrap; }
+  button, label.btn {
+    font: inherit; font-weight: 700; border: 0; border-radius: 12px; padding: 14px 18px; cursor: pointer;
+    background: var(--encre); color: #fff; flex: 1; text-align: center;
+  }
+  .secondaire { background: transparent !important; color: var(--encre) !important; box-shadow: inset 0 0 0 2px var(--encre); }
+  button:disabled { opacity: .5; cursor: wait; }
+  button:focus-visible, label.btn:focus-within { outline: 3px solid var(--c-plastique); outline-offset: 2px; }
+  input[type=file] { position: absolute; opacity: 0; width: 1px; }
+
+  /* Le résultat : un bac de tri coloré */
+  .bac { display: none; }
+  .bac.visible { display: block; }
+  .couvercle { height: 22px; border-radius: 10px 10px 4px 4px; background: var(--cat); margin: 0 -8px; }
+  .cuve {
+    background: var(--carte); border: 4px solid var(--cat); border-top: 0;
+    border-radius: 0 0 22px 22px; padding: 22px 20px 24px; clip-path: polygon(0 0, 100% 0, 96% 100%, 4% 100%);
+  }
+  .categorie { font-size: 2rem; font-weight: 800; color: var(--cat); margin: 0; }
+  .objet { font-size: 1.15rem; margin: 4px 0 12px; }
+  .jauge { height: 8px; background: #d9ddd8; border-radius: 4px; overflow: hidden; }
+  .jauge span { display: block; height: 100%; background: var(--cat); width: 0; transition: width .6s ease; }
+  .meta { color: var(--doux); font-size: .9rem; margin-top: 8px; }
+  .erreur { background: #fbe9e7; color: #8e2a1e; padding: 14px; border-radius: 12px; display: none; }
+  @media (prefers-reduced-motion: reduce) { .jauge span { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Poubelle intelligente</h1>
+  <p class="sous">Montre l'objet à la caméra, l'IA te dit dans quel bac le jeter.</p>
+
+  <div class="ecran">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="apercu" alt="Photo capturée" hidden>
+    <div class="vide" id="vide">Caméra non démarrée</div>
+  </div>
+
+  <div class="actions">
+    <button id="btnCamera">Démarrer la caméra</button>
+    <button id="btnAnalyser" disabled>Prendre la photo et analyser</button>
+    <label class="btn secondaire">Importer une photo
+      <input type="file" id="fichier" accept="image/*" capture="environment">
+    </label>
+  </div>
+
+  <div class="erreur" id="erreur"></div>
+
+  <section class="bac" id="bac" aria-live="polite">
+    <div class="couvercle"></div>
+    <div class="cuve">
+      <p class="categorie" id="categorie"></p>
+      <p class="objet" id="objet"></p>
+      <div class="jauge"><span id="jauge"></span></div>
+      <p class="meta" id="meta"></p>
+      <p id="explication"></p>
+    </div>
+  </section>
+</main>
+
+<script>
+const NOMS = {
+  papier_carton: "Papier / carton", plastique: "Plastique", verre: "Verre", metal: "Métal",
+  organique: "Organique", electronique: "Électronique", autre: "Autre déchet"
+};
+const $ = id => document.getElementById(id);
+const video = $("video"), apercu = $("apercu");
+let flux = null;
+
+$("btnCamera").onclick = async () => {
+  try {
+    flux = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    video.srcObject = flux;
+    apercu.hidden = true; $("vide").style.display = "none";
+    $("btnAnalyser").disabled = false;
+  } catch (e) {
+    afficherErreur("Impossible d'ouvrir la caméra. Autorise l'accès, et utilise localhost ou HTTPS. Sinon, importe une photo.");
+  }
+};
+
+// Redimensionne en JPEG ~640 px : l'API NVIDIA limite la taille des images en base64
+function versDataUrl(source, largeur, hauteur) {
+  const max = 640, ratio = Math.min(1, max / Math.max(largeur, hauteur));
+  const c = document.createElement("canvas");
+  c.width = Math.round(largeur * ratio); c.height = Math.round(hauteur * ratio);
+  c.getContext("2d").drawImage(source, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.75);
+}
+
+$("btnAnalyser").onclick = () => {
+  if (!video.videoWidth) return;
+  analyser(versDataUrl(video, video.videoWidth, video.videoHeight));
+};
+
+$("fichier").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => analyser(versDataUrl(img, img.naturalWidth, img.naturalHeight));
+  img.src = URL.createObjectURL(f);
+  e.target.value = "";
+};
+
+async function analyser(dataUrl) {
+  apercu.src = dataUrl; apercu.hidden = false; $("vide").style.display = "none";
+  $("erreur").style.display = "none"; $("bac").classList.remove("visible");
+  const btn = $("btnAnalyser"), texte = btn.textContent;
+  btn.disabled = true; btn.textContent = "Analyse en cours…";
+  try {
+    const r = await fetch("/api/classify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: dataUrl })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Erreur serveur");
+    afficherResultat(d);
+  } catch (e) {
+    afficherErreur(e.message);
+  } finally {
+    btn.disabled = !flux; btn.textContent = texte;
+  }
+}
+
+function afficherResultat(d) {
+  const bac = $("bac");
+  bac.style.setProperty("--cat", `var(--c-${d.categorie})`);
+  $("categorie").textContent = NOMS[d.categorie] || d.categorie;
+  $("objet").textContent = d.objet || "";
+  const conf = Math.round((Number(d.confiance) || 0) * 100);
+  $("meta").textContent = `Confiance : ${conf} % — modèle ${d.modele}`;
+  $("explication").textContent = d.explication || "";
+  bac.classList.add("visible");
+  requestAnimationFrame(() => $("jauge").style.width = conf + "%");
+}
+
+function afficherErreur(msg) {
+  const el = $("erreur"); el.textContent = msg; el.style.display = "block";
+}
+</script>
+</body>
+</html>
